@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Artale 羅密歐 10層×4格</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #f3f4f6;
+        }
+        .wrap {
+            max-width: 980px;
+            margin: 24px auto;
+            background: #fff;
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 10px 28px rgba(0,0,0,0.08);
+        }
+        h1 { margin-top: 0; }
+        .row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+        input, button {
+            padding: 10px 12px;
+            font-size: 16px;
+            border-radius: 10px;
+            border: 1px solid #cfcfcf;
+        }
+        button {
+            border: none;
+            background: #2563eb;
+            color: white;
+            cursor: pointer;
+        }
+        button.gray { background: #6b7280; }
+        button.red { background: #dc2626; }
+
+        .panel {
+            background: #f9fafb;
+            border-radius: 12px;
+            padding: 14px;
+            margin-top: 14px;
+        }
+
+        .players {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .player-tag {
+            padding: 8px 12px;
+            border-radius: 999px;
+            color: #fff;
+            font-weight: bold;
+        }
+
+        .grid-wrap {
+            overflow-x: auto;
+            margin-top: 20px;
+        }
+
+        table.grid {
+            border-collapse: separate;
+            border-spacing: 10px;
+            width: 100%;
+        }
+
+        .floor-label {
+            width: 80px;
+            text-align: center;
+            font-weight: bold;
+            color: #374151;
+        }
+
+        .cell-btn {
+            width: 100%;
+            height: 56px;
+            border-radius: 12px;
+            border: 2px solid #d1d5db;
+            background: #fff;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .hint {
+            color: #6b7280;
+            font-size: 14px;
+            margin-top: 8px;
+        }
+
+        .color-box {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .color-preview {
+            width: 18px;
+            height: 18px;
+            border-radius: 999px;
+            border: 1px solid #ccc;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <h1>Artale 羅密歐任務進度板</h1>
+
+        <div class="row">
+            <input id="name" placeholder="你的名稱" />
+            <input id="roomId" placeholder="房號（加入用）" />
+            <input id="color" type="color" value="#3b82f6" />
+        </div>
+
+        <div class="row">
+            <button onclick="createRoom()">建立房間</button>
+            <button class="gray" onclick="joinRoom()">加入房間</button>
+            <button class="gray" onclick="resetMe()">重置自己</button>
+            <button class="red" onclick="resetAll()">全部重置（房主）</button>
+        </div>
+
+        <div class="panel">
+            <div>狀態：<b id="connText">連線中...</b></div>
+            <div>房號：<b id="currentRoom">-</b></div>
+            <div class="color-box">
+                我的顏色：
+                <span id="myColorPreview" class="color-preview" style="background:#3b82f6;"></span>
+                <b id="myColorText">#3b82f6</b>
+            </div>
+            <div class="hint">每層 4 格，任何人都可以點空白格。改色後會同步更新你已經點過的格子。</div>
+        </div>
+
+        <div class="panel">
+            <b>玩家列表</b>
+            <div class="players" id="players"></div>
+        </div>
+
+        <div class="grid-wrap">
+            <table class="grid" id="gridTable"></table>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
