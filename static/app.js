@@ -6,15 +6,18 @@ let rows = 10;
 let cols = 4;
 
 // 這裡先寫死，之後你要改密碼就改這兩個
-const AUTH_USERNAME = "admin";
-const AUTH_PASSWORD = "123456";
+const PASSWORD = "123456";
+
+
 
 function connectWs() {
     const protocol = location.protocol === "https:" ? "wss" : "ws";
 
     // 用 query string 傳帳密，對應 server.py 的 ws.query_params
-    const wsUrl =
-        `${protocol}://${location.host}/ws?u=${encodeURIComponent(AUTH_USERNAME)}&p=${encodeURIComponent(AUTH_PASSWORD)}`;
+    const PASSWORD = "123456";
+
+const wsUrl =
+`${protocol}://${location.host}/ws?p=${encodeURIComponent(PASSWORD)}`;
 
     ws = new WebSocket(wsUrl);
 
