@@ -5,18 +5,9 @@ let grid = [];
 let rows = 10;
 let cols = 4;
 
-// 這裡先寫死，之後你要改密碼就改這兩個
-const AUTH_USERNAME = "admin";
-const AUTH_PASSWORD = "123456";
-
 function connectWs() {
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-
-    // 用 query string 傳帳密，對應 server.py 的 ws.query_params
-    const wsUrl =
-        `${protocol}://${location.host}/ws?u=${encodeURIComponent(AUTH_USERNAME)}&p=${encodeURIComponent(AUTH_PASSWORD)}`;
-
-    ws = new WebSocket(wsUrl);
+    ws = new WebSocket(`${protocol}://${location.host}/ws`);
 
     ws.onopen = function () {
         setText("connText", "已連線");
@@ -49,10 +40,6 @@ function connectWs() {
         if (data.type === "error") {
             alert(data.message || "發生錯誤");
         }
-    };
-
-    ws.onerror = function () {
-        setText("connText", "連線失敗");
     };
 }
 
@@ -168,29 +155,11 @@ function renderPlayers() {
     });
 }
 
-function copyRoomCode() {
-    const roomCode = document.getElementById("currentRoom").textContent.trim();
-
-    if (!roomCode || roomCode === "-") {
-        alert("目前沒有房號");
-        return;
-    }
-
-    navigator.clipboard.writeText(roomCode).then(() => {
-        document.getElementById("copyMsg").textContent = "已複製";
-        setTimeout(() => {
-            document.getElementById("copyMsg").textContent = "";
-        }, 1500);
-    }).catch(() => {
-        alert("複製失敗");
-    });
-}
-
 function renderGrid() {
     const table = document.getElementById("gridTable");
     table.innerHTML = "";
 
-    for (let r = rows - 1; r >= 0; r--) {
+    for (let r = 0; r < rows; r--) {
         const tr = document.createElement("tr");
 
         const label = document.createElement("td");

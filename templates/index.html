@@ -3,48 +3,122 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Artale 羅密歐 10層×4格</title>
+    <title>Artale 羅密歐任務進度板</title>
     <style>
         body {
             margin: 0;
             font-family: Arial, sans-serif;
-            background: #f3f4f6;
+            background:
+                radial-gradient(circle at top left, #fff7ed 0%, #fef3c7 20%, transparent 40%),
+                radial-gradient(circle at bottom right, #dbeafe 0%, #e0f2fe 20%, transparent 40%),
+                #f8fafc;
+            color: #1f2937;
         }
+
         .wrap {
             max-width: 980px;
-            margin: 24px auto;
-            background: #fff;
-            border-radius: 16px;
+            margin: 20px auto;
+            background: rgba(255, 255, 255, 0.92);
+            border: 1px solid #f3f4f6;
+            border-radius: 24px;
             padding: 20px;
-            box-shadow: 0 10px 28px rgba(0,0,0,0.08);
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.08);
+            backdrop-filter: blur(6px);
         }
-        h1 { margin-top: 0; }
+
+        .title-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+
+        .title-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .cat-box {
+            width: 64px;
+            height: 64px;
+            border-radius: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #fde68a, #fdba74);
+            box-shadow: 0 8px 20px rgba(251, 146, 60, 0.25);
+            font-size: 34px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 28px;
+        }
+
+        .sub {
+            margin-top: 4px;
+            color: #6b7280;
+            font-size: 14px;
+        }
+
         .row {
             display: flex;
             flex-wrap: wrap;
             gap: 10px;
             margin-bottom: 12px;
         }
+
         input, button {
             padding: 10px 12px;
             font-size: 16px;
-            border-radius: 10px;
-            border: 1px solid #cfcfcf;
+            border-radius: 12px;
+            border: 1px solid #d1d5db;
+            box-sizing: border-box;
         }
+
+        input {
+            background: #fff;
+        }
+
         button {
             border: none;
-            background: #2563eb;
+            background: linear-gradient(135deg, #3b82f6, #2563eb);
             color: white;
             cursor: pointer;
+            box-shadow: 0 6px 16px rgba(37, 99, 235, 0.22);
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
         }
-        button.gray { background: #6b7280; }
-        button.red { background: #dc2626; }
+
+        button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 10px 20px rgba(37, 99, 235, 0.24);
+        }
+
+        button.gray {
+            background: linear-gradient(135deg, #6b7280, #4b5563);
+            box-shadow: 0 6px 16px rgba(75, 85, 99, 0.18);
+        }
+
+        button.red {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            box-shadow: 0 6px 16px rgba(220, 38, 38, 0.18);
+        }
+
+        button.green {
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+            box-shadow: 0 6px 16px rgba(22, 163, 74, 0.18);
+        }
 
         .panel {
-            background: #f9fafb;
-            border-radius: 12px;
+            background: linear-gradient(180deg, #ffffff, #f8fafc);
+            border: 1px solid #eef2f7;
+            border-radius: 18px;
             padding: 14px;
             margin-top: 14px;
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
         }
 
         .players {
@@ -59,6 +133,7 @@
             border-radius: 999px;
             color: #fff;
             font-weight: bold;
+            box-shadow: 0 8px 18px rgba(0,0,0,0.12);
         }
 
         .grid-wrap {
@@ -77,28 +152,41 @@
             text-align: center;
             font-weight: bold;
             color: #374151;
+            background: #fff7ed;
+            border-radius: 12px;
+            padding: 8px 6px;
+            border: 1px solid #fed7aa;
         }
 
         .cell-btn {
             width: 100%;
-            height: 56px;
-            border-radius: 12px;
-            border: 2px solid #d1d5db;
-            background: #fff;
+            min-width: 78px;
+            height: 58px;
+            border-radius: 16px;
+            border: 2px solid #dbe4ee;
+            background: linear-gradient(180deg, #ffffff, #f8fafc);
             font-weight: bold;
             cursor: pointer;
+            font-size: 14px;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
+        }
+
+        .cell-btn:hover {
+            border-color: #93c5fd;
         }
 
         .hint {
             color: #6b7280;
             font-size: 14px;
             margin-top: 8px;
+            line-height: 1.6;
         }
 
         .color-box {
             display: inline-flex;
             align-items: center;
             gap: 8px;
+            flex-wrap: wrap;
         }
 
         .color-preview {
@@ -108,11 +196,90 @@
             border: 1px solid #ccc;
             display: inline-block;
         }
+
+        .room-line {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .room-code {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: #eff6ff;
+            color: #1d4ed8;
+            font-weight: bold;
+            border: 1px solid #bfdbfe;
+        }
+
+        .copy-msg {
+            font-size: 13px;
+            color: #16a34a;
+        }
+
+        .mini-cat {
+            margin-left: 6px;
+        }
+
+        @media (max-width: 640px) {
+            .wrap {
+                margin: 0;
+                border-radius: 0;
+                padding: 12px;
+                min-height: 100vh;
+            }
+
+            .cat-box {
+                width: 54px;
+                height: 54px;
+                font-size: 28px;
+            }
+
+            h1 {
+                font-size: 22px;
+            }
+
+            .row input,
+            .row button {
+                width: 100%;
+            }
+
+            input, button {
+                min-height: 46px;
+                font-size: 16px;
+            }
+
+            .cell-btn {
+                min-width: 58px;
+                height: 52px;
+                font-size: 12px;
+                padding: 4px;
+            }
+
+            table.grid {
+                border-spacing: 6px;
+            }
+
+            .floor-label {
+                width: 60px;
+                font-size: 13px;
+            }
+        }
     </style>
 </head>
 <body>
     <div class="wrap">
-        <h1>Artale 羅密歐任務進度板</h1>
+        <div class="title-bar">
+            <div class="title-left">
+                <div class="cat-box">🐱</div>
+                <div>
+                    <h1>Artale 羅密歐任務進度板</h1>
+                    <div class="sub">監工中，記得不要點錯格子</div>
+                </div>
+            </div>
+        </div>
 
         <div class="row">
             <input id="name" placeholder="你的名稱" />
@@ -129,13 +296,24 @@
 
         <div class="panel">
             <div>狀態：<b id="connText">連線中...</b></div>
-            <div>房號：<b id="currentRoom">-</b></div>
-            <div class="color-box">
+
+            <div class="room-line" style="margin-top:8px;">
+                <div>房號：<span id="currentRoom" class="room-code">-</span></div>
+                <button class="green" onclick="copyRoomCode()">複製房號</button>
+                <span id="copyMsg" class="copy-msg"></span>
+            </div>
+
+            <div class="color-box" style="margin-top:8px;">
                 我的顏色：
                 <span id="myColorPreview" class="color-preview" style="background:#3b82f6;"></span>
                 <b id="myColorText">#3b82f6</b>
+                <span class="mini-cat">🐾</span>
             </div>
-            <div class="hint">每層 4 格，任何人都可以點空白格。改色後會同步更新你已經點過的格子。</div>
+
+            <div class="hint">
+                每層 4 格，任何人都可以點空白格。<br>
+                同一個人同一層只能點 1 格。
+            </div>
         </div>
 
         <div class="panel">
