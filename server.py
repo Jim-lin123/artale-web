@@ -3,16 +3,17 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
-import uuid
 import json
 import os
+import random
+import uuid
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-SITE_PASSWORD = "123456"     # 玩家連線密碼
-ADMIN_PASSWORD = "30678"    # 管理頁密碼
+SITE_PASSWORD = "123456"   # 玩家連線密碼
+ADMIN_PASSWORD = "30678"   # 管理頁密碼
 
 MAX_PLAYERS = 4
 ROWS = 10
@@ -20,6 +21,10 @@ COLS = 4
 
 rooms = {}
 client_room = {}
+
+
+def generate_room_id():
+    return f"{random.randint(0, 9999):04d}"
 
 
 def make_room(room_id: str):
@@ -82,16 +87,19 @@ async def remove_client(client_id: str):
     if room and client_id in room["players"]:
         del room["players"][client_id]
 
+        # 清掉這個玩家已點的格子
         for r in range(ROWS):
             for c in range(COLS):
                 cell = room["grid"][r][c]
                 if cell and cell["client_id"] == client_id:
                     room["grid"][r][c] = None
 
+        # 如果房主離開，換下一位當房主
         if room["host_id"] == client_id:
             remain = list(room["players"].keys())
             room["host_id"] = remain[0] if remain else None
 
+        # 房間沒人就刪掉
         if len(room["players"]) == 0:
             del rooms[room_id]
         else:
@@ -211,8 +219,7 @@ async def admin_kick_all(key: str):
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    params = ws.query_params
-    password = params.get("p")
+    password = ws.query_params.get("p")
 
     if password != SITE_PASSWORD:
         await ws.close()
@@ -227,9 +234,8 @@ async def websocket_endpoint(ws: WebSocket):
             data = json.loads(raw)
             action = data.get("action")
 
-            # 改網站密碼後，舊連線下次操作會被踢
-            params = ws.query_params
-            password = params.get("p")
+            # 如果你之後改了網站密碼，舊連線下次送訊息會被踢掉
+            password = ws.query_params.get("p")
             if password != SITE_PASSWORD:
                 await ws.close()
                 break
@@ -242,7 +248,10 @@ async def websocket_endpoint(ws: WebSocket):
                     await send_json(ws, {"type": "error", "message": "請輸入名稱"})
                     continue
 
-                room_id = str(uuid.uuid4())[:6].upper()
+                room_id = generate_room_id()
+                while room_id in rooms:
+                    room_id = generate_room_id()
+
                 room = make_room(room_id)
                 room["host_id"] = client_id
                 room["players"][client_id] = {
@@ -264,7 +273,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif action == "join_room":
                 name = data.get("name", "").strip()
                 color = data.get("color", "#3b82f6").strip()
-                room_id = data.get("room_id", "").strip().upper()
+                room_id = data.get("room_id", "").strip()
 
                 if not name or not room_id:
                     await send_json(ws, {"type": "error", "message": "請輸入名稱、顏色與房號"})
@@ -306,6 +315,7 @@ async def websocket_endpoint(ws: WebSocket):
 
                 room["players"][client_id]["color"] = color
 
+                # 已點的格子也一起改色
                 for r in range(ROWS):
                     for c in range(COLS):
                         cell = room["grid"][r][c]
@@ -331,6 +341,7 @@ async def websocket_endpoint(ws: WebSocket):
                 current = room["grid"][row][col]
                 me = room["players"][client_id]
 
+                # 同一個人同一層只能點一格
                 my_col_in_this_row = None
                 for c in range(COLS):
                     cell = room["grid"][row][c]
@@ -384,6 +395,9 @@ async def websocket_endpoint(ws: WebSocket):
 
                 room["grid"] = [[None for _ in range(COLS)] for _ in range(ROWS)]
                 await broadcast_room(room_id)
+
+            elif action == "ping":
+                await send_json(ws, {"type": "pong"})
 
     except WebSocketDisconnect:
         await remove_client(client_id)

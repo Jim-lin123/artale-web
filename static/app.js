@@ -5,28 +5,23 @@ let grid = [];
 let rows = 10;
 let cols = 4;
 
-// 這裡先寫死，之後你要改密碼就改這兩個
-const PASSWORD = "123456";
-
-
+const PASSWORD = "123456"; // 要跟 server.py 的 SITE_PASSWORD 一樣
+let heartbeatTimer = null;
 
 function connectWs() {
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-
-    // 用 query string 傳帳密，對應 server.py 的 ws.query_params
-    const PASSWORD = "123456";
-
-const wsUrl =
-`${protocol}://${location.host}/ws?p=${encodeURIComponent(PASSWORD)}`;
+    const wsUrl = `${protocol}://${location.host}/ws?p=${encodeURIComponent(PASSWORD)}`;
 
     ws = new WebSocket(wsUrl);
 
     ws.onopen = function () {
         setText("connText", "已連線");
+        startHeartbeat();
     };
 
     ws.onclose = function () {
         setText("connText", "連線中斷，3 秒後重連");
+        stopHeartbeat();
         setTimeout(connectWs, 3000);
     };
 
@@ -36,7 +31,10 @@ const wsUrl =
         if (data.type === "joined") {
             myClientId = data.client_id;
             setText("currentRoom", data.room_id);
-            document.getElementById("roomId").value = data.room_id;
+            const roomInput = document.getElementById("roomId");
+            if (roomInput) {
+                roomInput.value = data.room_id;
+            }
         }
 
         if (data.type === "room_update") {
@@ -49,6 +47,10 @@ const wsUrl =
             renderGrid();
         }
 
+        if (data.type === "pong") {
+            return;
+        }
+
         if (data.type === "error") {
             alert(data.message || "發生錯誤");
         }
@@ -59,8 +61,28 @@ const wsUrl =
     };
 }
 
+function startHeartbeat() {
+    stopHeartbeat();
+
+    heartbeatTimer = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ action: "ping" }));
+        }
+    }, 1 * 60 * 1000); // 每 1 分鐘送一次
+}
+
+function stopHeartbeat() {
+    if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+    }
+}
+
 function setText(id, text) {
-    document.getElementById(id).textContent = text;
+    const el = document.getElementById(id);
+    if (el) {
+        el.textContent = text;
+    }
 }
 
 function getName() {
@@ -77,7 +99,10 @@ function getColor() {
 
 function updateMyColorPreview() {
     const color = getColor();
-    document.getElementById("myColorPreview").style.background = color;
+    const preview = document.getElementById("myColorPreview");
+    if (preview) {
+        preview.style.background = color;
+    }
     setText("myColorText", color);
 }
 
@@ -157,6 +182,8 @@ function clickCell(row, col) {
 
 function renderPlayers() {
     const wrap = document.getElementById("players");
+    if (!wrap) return;
+
     wrap.innerHTML = "";
 
     players.forEach(p => {
@@ -180,10 +207,13 @@ function copyRoomCode() {
     }
 
     navigator.clipboard.writeText(roomCode).then(() => {
-        document.getElementById("copyMsg").textContent = "已複製";
-        setTimeout(() => {
-            document.getElementById("copyMsg").textContent = "";
-        }, 1500);
+        const msg = document.getElementById("copyMsg");
+        if (msg) {
+            msg.textContent = "已複製";
+            setTimeout(() => {
+                msg.textContent = "";
+            }, 1500);
+        }
     }).catch(() => {
         alert("複製失敗");
     });
@@ -191,6 +221,8 @@ function copyRoomCode() {
 
 function renderGrid() {
     const table = document.getElementById("gridTable");
+    if (!table) return;
+
     table.innerHTML = "";
 
     for (let r = rows - 1; r >= 0; r--) {
