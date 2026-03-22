@@ -108,6 +108,40 @@ async def remove_client(client_id: str):
     client_room.pop(client_id, None)
 
 
+async def remove_client_from_current_room(client_id: str):
+    old_room_id = client_room.get(client_id)
+    if not old_room_id:
+        return
+
+    old_room = rooms.get(old_room_id)
+    if not old_room:
+        client_room.pop(client_id, None)
+        return
+
+    if client_id in old_room["players"]:
+        del old_room["players"][client_id]
+
+        # 清掉這個玩家已點的格子
+        for r in range(ROWS):
+            for c in range(COLS):
+                cell = old_room["grid"][r][c]
+                if cell and cell["client_id"] == client_id:
+                    old_room["grid"][r][c] = None
+
+        # 如果是房主離開，換下一位
+        if old_room["host_id"] == client_id:
+            remain = list(old_room["players"].keys())
+            old_room["host_id"] = remain[0] if remain else None
+
+        # 沒人就刪房
+        if len(old_room["players"]) == 0:
+            del rooms[old_room_id]
+        else:
+            await broadcast_room(old_room_id)
+
+    client_room.pop(client_id, None)
+
+
 def get_admin_data():
     room_list = []
     total_online = 0
@@ -234,13 +268,15 @@ async def websocket_endpoint(ws: WebSocket):
             data = json.loads(raw)
             action = data.get("action")
 
-            # 如果你之後改了網站密碼，舊連線下次送訊息會被踢掉
+            # 如果之後改了網站密碼，舊連線下次送訊息會被踢
             password = ws.query_params.get("p")
             if password != SITE_PASSWORD:
                 await ws.close()
                 break
 
             if action == "create_room":
+                await remove_client_from_current_room(client_id)
+
                 name = data.get("name", "").strip()
                 color = data.get("color", "#3b82f6").strip()
 
@@ -271,6 +307,8 @@ async def websocket_endpoint(ws: WebSocket):
                 await broadcast_room(room_id)
 
             elif action == "join_room":
+                await remove_client_from_current_room(client_id)
+
                 name = data.get("name", "").strip()
                 color = data.get("color", "#3b82f6").strip()
                 room_id = data.get("room_id", "").strip()
