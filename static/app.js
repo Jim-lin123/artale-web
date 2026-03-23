@@ -10,6 +10,16 @@ let heartbeatTimer = null;
 let reconnectTimer = null;
 
 const STORAGE_KEY = "artale_room_state_v1";
+const CLIENT_ID_KEY = "artale_client_id_v1";
+
+function getOrCreateClientId() {
+    let cid = localStorage.getItem(CLIENT_ID_KEY);
+    if (!cid) {
+        cid = Math.random().toString(36).slice(2, 10);
+        localStorage.setItem(CLIENT_ID_KEY, cid);
+    }
+    return cid;
+}
 
 function saveRoomState(data) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -30,7 +40,9 @@ function clearRoomState() {
 
 function connectWs() {
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-    const wsUrl = `${protocol}://${location.host}/ws?p=${encodeURIComponent(PASSWORD)}`;
+    const clientId = getOrCreateClientId();
+    const wsUrl =
+        `${protocol}://${location.host}/ws?p=${encodeURIComponent(PASSWORD)}&cid=${encodeURIComponent(clientId)}`;
 
     ws = new WebSocket(wsUrl);
 
@@ -63,9 +75,9 @@ function connectWs() {
                 roomInput.value = data.room_id;
             }
 
-            // joined 成功後，更新本地保存資料
             const name = getName();
             const color = getColor();
+
             saveRoomState({
                 room_id: data.room_id,
                 name: name,
@@ -120,7 +132,6 @@ function tryAutoRejoin() {
     if (!saved.room_id || !saved.name || !saved.color) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-    // 自動填回畫面
     const nameInput = document.getElementById("name");
     const roomInput = document.getElementById("roomId");
     const colorInput = document.getElementById("color");
@@ -131,7 +142,6 @@ function tryAutoRejoin() {
 
     updateMyColorPreview();
 
-    // 自動重加房
     ws.send(JSON.stringify({
         action: "join_room",
         name: saved.name,
@@ -187,7 +197,7 @@ function createRoom() {
 
     updateMyColorPreview();
 
-    // 先清掉舊資料，避免誤重連舊房
+    // 建新房前清掉舊房資訊，但保留固定 client_id
     clearRoomState();
 
     send({

@@ -260,7 +260,11 @@ async def websocket_endpoint(ws: WebSocket):
         return
 
     await ws.accept()
-    client_id = str(uuid.uuid4())[:8]
+
+    # ✅ 關鍵：優先使用前端帶來的固定 client_id
+    client_id = ws.query_params.get("cid")
+    if not client_id:
+        client_id = str(uuid.uuid4())[:8]
 
     try:
         while True:
@@ -307,8 +311,6 @@ async def websocket_endpoint(ws: WebSocket):
                 await broadcast_room(room_id)
 
             elif action == "join_room":
-                await remove_client_from_current_room(client_id)
-
                 name = data.get("name", "").strip()
                 color = data.get("color", "#3b82f6").strip()
                 room_id = data.get("room_id", "").strip()
@@ -322,16 +324,34 @@ async def websocket_endpoint(ws: WebSocket):
                     await send_json(ws, {"type": "error", "message": "找不到房間"})
                     continue
 
-                if len(room["players"]) >= MAX_PLAYERS:
+                # ✅ 如果這個人本來就在同一房，視為重連，不要先刪自己的格子
+                current_room_id = client_room.get(client_id)
+                if current_room_id != room_id:
+                    await remove_client_from_current_room(client_id)
+
+                if len(room["players"]) >= MAX_PLAYERS and client_id not in room["players"]:
                     await send_json(ws, {"type": "error", "message": "房間已滿"})
                     continue
 
+                # ✅ 保留同一 client_id 的格子，只更新連線 / 名字 / 顏色
                 room["players"][client_id] = {
                     "name": name,
                     "color": color,
                     "ws": ws
                 }
                 client_room[client_id] = room_id
+
+                # 若房主空缺，重連者可補上
+                if room["host_id"] is None:
+                    room["host_id"] = client_id
+
+                # ✅ 把這個人以前點過的格子名稱與顏色同步更新
+                for r in range(ROWS):
+                    for c in range(COLS):
+                        cell = room["grid"][r][c]
+                        if cell and cell["client_id"] == client_id:
+                            cell["name"] = name
+                            cell["color"] = color
 
                 await send_json(ws, {
                     "type": "joined",
