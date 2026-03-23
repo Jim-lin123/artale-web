@@ -205,14 +205,14 @@ async def kick_all():
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html", {"request": request})
 
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request, key: str = ""):
     if key != ADMIN_PASSWORD:
         raise HTTPException(status_code=403, detail="無權限")
-    return templates.TemplateResponse("admin.html", {"request": request, "key": key})
+    return templates.TemplateResponse(request, "admin.html", {"request": request, "key": key})
 
 
 @app.get("/healthz")
