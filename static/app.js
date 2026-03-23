@@ -7,6 +7,26 @@ let cols = 4;
 
 const PASSWORD = "123456"; // 要跟 server.py 的 SITE_PASSWORD 一樣
 let heartbeatTimer = null;
+let reconnectTimer = null;
+
+const STORAGE_KEY = "artale_room_state_v1";
+
+function saveRoomState(data) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+function loadRoomState() {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function clearRoomState() {
+    localStorage.removeItem(STORAGE_KEY);
+}
 
 function connectWs() {
     const protocol = location.protocol === "https:" ? "wss" : "ws";
@@ -17,12 +37,18 @@ function connectWs() {
     ws.onopen = function () {
         setText("connText", "已連線");
         startHeartbeat();
+        tryAutoRejoin();
     };
 
     ws.onclose = function () {
         setText("connText", "連線中斷，3 秒後重連");
         stopHeartbeat();
-        setTimeout(connectWs, 3000);
+
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+        }
+
+        reconnectTimer = setTimeout(connectWs, 3000);
     };
 
     ws.onmessage = function (event) {
@@ -31,10 +57,20 @@ function connectWs() {
         if (data.type === "joined") {
             myClientId = data.client_id;
             setText("currentRoom", data.room_id);
+
             const roomInput = document.getElementById("roomId");
             if (roomInput) {
                 roomInput.value = data.room_id;
             }
+
+            // joined 成功後，更新本地保存資料
+            const name = getName();
+            const color = getColor();
+            saveRoomState({
+                room_id: data.room_id,
+                name: name,
+                color: color
+            });
         }
 
         if (data.type === "room_update") {
@@ -68,7 +104,7 @@ function startHeartbeat() {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ action: "ping" }));
         }
-    }, 1 * 60 * 1000); // 每 1 分鐘送一次
+    }, 2 * 60 * 1000); // 每 2 分鐘一次
 }
 
 function stopHeartbeat() {
@@ -76,6 +112,32 @@ function stopHeartbeat() {
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
     }
+}
+
+function tryAutoRejoin() {
+    const saved = loadRoomState();
+    if (!saved) return;
+    if (!saved.room_id || !saved.name || !saved.color) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    // 自動填回畫面
+    const nameInput = document.getElementById("name");
+    const roomInput = document.getElementById("roomId");
+    const colorInput = document.getElementById("color");
+
+    if (nameInput) nameInput.value = saved.name;
+    if (roomInput) roomInput.value = saved.room_id;
+    if (colorInput) colorInput.value = saved.color;
+
+    updateMyColorPreview();
+
+    // 自動重加房
+    ws.send(JSON.stringify({
+        action: "join_room",
+        name: saved.name,
+        room_id: saved.room_id,
+        color: saved.color
+    }));
 }
 
 function setText(id, text) {
@@ -90,7 +152,7 @@ function getName() {
 }
 
 function getRoomId() {
-    return document.getElementById("roomId").value.trim().toUpperCase();
+    return document.getElementById("roomId").value.trim();
 }
 
 function getColor() {
@@ -124,6 +186,10 @@ function createRoom() {
     }
 
     updateMyColorPreview();
+
+    // 先清掉舊資料，避免誤重連舊房
+    clearRoomState();
+
     send({
         action: "create_room",
         name: name,
@@ -142,10 +208,17 @@ function joinRoom() {
     }
 
     updateMyColorPreview();
+
     send({
         action: "join_room",
         name: name,
         room_id: roomId,
+        color: color
+    });
+
+    saveRoomState({
+        room_id: roomId,
+        name: name,
         color: color
     });
 }
@@ -153,6 +226,12 @@ function joinRoom() {
 function changeColor() {
     const color = getColor();
     updateMyColorPreview();
+
+    const saved = loadRoomState();
+    if (saved) {
+        saved.color = color;
+        saveRoomState(saved);
+    }
 
     if (!ws || ws.readyState !== WebSocket.OPEN) {
         return;
@@ -178,6 +257,15 @@ function clickCell(row, col) {
         row: row,
         col: col
     });
+}
+
+function leaveRoomMemory() {
+    clearRoomState();
+    setText("currentRoom", "-");
+    const roomInput = document.getElementById("roomId");
+    if (roomInput) {
+        roomInput.value = "";
+    }
 }
 
 function renderPlayers() {
@@ -263,6 +351,11 @@ function renderGrid() {
         table.appendChild(tr);
     }
 }
+
+window.addEventListener("beforeunload", () => {
+    // 如果你不想關頁面就清除記錄，可以把這行註解掉
+    // clearRoomState();
+});
 
 document.getElementById("color").addEventListener("input", changeColor);
 updateMyColorPreview();
