@@ -7,8 +7,30 @@ import json
 import os
 import random
 import uuid
+import asyncio
+import logging
+import time
+from contextlib import asynccontextmanager
 
-app = FastAPI()
+logger = logging.getLogger("uvicorn.error")
+RECONNECT_GRACE_SECONDS = int(os.environ.get("RECONNECT_GRACE_SECONDS", "300"))
+APP_VERSION = "2026-11-17-reconnect-v1"
+connections = {}
+disconnect_tasks = {}
+
+
+@asynccontextmanager
+async def lifespan(app):
+    logger.info("Starting Artale version=%s grace_seconds=%s", APP_VERSION, RECONNECT_GRACE_SECONDS)
+    yield
+    tasks = list(disconnect_tasks.values())
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    disconnect_tasks.clear()
+
+
+app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
@@ -43,7 +65,9 @@ def build_room_payload(room):
             "client_id": client_id,
             "name": p["name"],
             "color": p["color"],
-            "is_host": client_id == room["host_id"]
+            "is_host": client_id == room["host_id"],
+            "connected": p["ws"] is not None,
+            "reconnect_until": p.get("reconnect_until")
         })
 
     return {
@@ -60,6 +84,12 @@ async def send_json(ws: WebSocket, data: dict):
     await ws.send_text(json.dumps(data, ensure_ascii=False))
 
 
+def cancel_disconnect_timer(client_id: str):
+    task = disconnect_tasks.pop(client_id, None)
+    if task and task is not asyncio.current_task():
+        task.cancel()
+
+
 async def broadcast_room(room_id: str):
     room = rooms.get(room_id)
     if not room:
@@ -67,79 +97,79 @@ async def broadcast_room(room_id: str):
 
     payload = build_room_payload(room)
     dead = []
-
     for client_id, player in list(room["players"].items()):
+        socket = player["ws"]
+        if socket is None:
+            continue
         try:
-            await send_json(player["ws"], payload)
+            await send_json(socket, payload)
         except Exception:
-            dead.append(client_id)
+            dead.append((client_id, socket))
 
-    for client_id in dead:
-        await remove_client(client_id)
+    changed = False
+    for client_id, socket in dead:
+        changed = await mark_disconnected(client_id, socket, broadcast=False) or changed
+    if changed:
+        await broadcast_room(room_id)
 
 
 async def remove_client(client_id: str):
-    room_id = client_room.get(client_id)
-    if not room_id:
+    """Permanently remove a player after expiry, switching rooms, or an admin kick."""
+    cancel_disconnect_timer(client_id)
+    room_id = client_room.pop(client_id, None)
+    room = rooms.get(room_id)
+    if not room or client_id not in room["players"]:
         return
 
+    del room["players"][client_id]
+    for row in room["grid"]:
+        for col, cell in enumerate(row):
+            if cell and cell["client_id"] == client_id:
+                row[col] = None
+
+    if room["host_id"] == client_id:
+        online = [cid for cid, p in room["players"].items() if p["ws"] is not None]
+        remaining = online or list(room["players"])
+        room["host_id"] = remaining[0] if remaining else None
+
+    if not room["players"]:
+        rooms.pop(room_id, None)
+    else:
+        await broadcast_room(room_id)
+
+
+async def expire_disconnected(client_id: str, player: dict):
+    try:
+        await asyncio.sleep(RECONNECT_GRACE_SECONDS)
+        room = rooms.get(client_room.get(client_id))
+        if (disconnect_tasks.get(client_id) is asyncio.current_task()
+                and room and room["players"].get(client_id) is player
+                and player["ws"] is None):
+            logger.info("Reconnect grace expired client=%s room=%s", client_id, room["room_id"])
+            await remove_client(client_id)
+    finally:
+        if disconnect_tasks.get(client_id) is asyncio.current_task():
+            disconnect_tasks.pop(client_id, None)
+
+
+async def mark_disconnected(client_id: str, socket: WebSocket, broadcast=True):
+    room_id = client_room.get(client_id)
     room = rooms.get(room_id)
-    if room and client_id in room["players"]:
-        del room["players"][client_id]
-
-        # 清掉這個玩家已點的格子
-        for r in range(ROWS):
-            for c in range(COLS):
-                cell = room["grid"][r][c]
-                if cell and cell["client_id"] == client_id:
-                    room["grid"][r][c] = None
-
-        # 如果房主離開，換下一位當房主
-        if room["host_id"] == client_id:
-            remain = list(room["players"].keys())
-            room["host_id"] = remain[0] if remain else None
-
-        # 房間沒人就刪掉
-        if len(room["players"]) == 0:
-            del rooms[room_id]
-        else:
-            await broadcast_room(room_id)
-
-    client_room.pop(client_id, None)
+    player = room["players"].get(client_id) if room else None
+    # A late close from an old socket must never remove the replacement connection.
+    if not player or player["ws"] is not socket:
+        return False
+    player["ws"] = None
+    player["reconnect_until"] = time.time() + RECONNECT_GRACE_SECONDS
+    cancel_disconnect_timer(client_id)
+    disconnect_tasks[client_id] = asyncio.create_task(expire_disconnected(client_id, player))
+    if broadcast:
+        await broadcast_room(room_id)
+    return True
 
 
 async def remove_client_from_current_room(client_id: str):
-    old_room_id = client_room.get(client_id)
-    if not old_room_id:
-        return
-
-    old_room = rooms.get(old_room_id)
-    if not old_room:
-        client_room.pop(client_id, None)
-        return
-
-    if client_id in old_room["players"]:
-        del old_room["players"][client_id]
-
-        # 清掉這個玩家已點的格子
-        for r in range(ROWS):
-            for c in range(COLS):
-                cell = old_room["grid"][r][c]
-                if cell and cell["client_id"] == client_id:
-                    old_room["grid"][r][c] = None
-
-        # 如果是房主離開，換下一位
-        if old_room["host_id"] == client_id:
-            remain = list(old_room["players"].keys())
-            old_room["host_id"] = remain[0] if remain else None
-
-        # 沒人就刪房
-        if len(old_room["players"]) == 0:
-            del rooms[old_room_id]
-        else:
-            await broadcast_room(old_room_id)
-
-    client_room.pop(client_id, None)
+    await remove_client(client_id)
 
 
 def get_admin_data():
@@ -153,14 +183,17 @@ def get_admin_data():
                 "client_id": client_id,
                 "name": p["name"],
                 "color": p["color"],
-                "is_host": client_id == room["host_id"]
+                "is_host": client_id == room["host_id"],
+                "connected": p["ws"] is not None,
+                "reconnect_until": p.get("reconnect_until")
             })
 
-        total_online += len(players)
+        total_online += sum(p["connected"] for p in players)
 
         room_list.append({
             "room_id": room_id,
             "count": len(players),
+            "online_count": sum(p["connected"] for p in players),
             "players": players
         })
 
@@ -172,40 +205,37 @@ def get_admin_data():
 
 
 async def kick_client_by_id(client_id: str):
-    room_id = client_room.get(client_id)
-    room = rooms.get(room_id) if room_id else None
-
-    if room and client_id in room["players"]:
+    room = rooms.get(client_room.get(client_id))
+    player = room["players"].get(client_id) if room else None
+    socket = connections.pop(client_id, None)
+    if socket is None and player:
+        socket = player["ws"]
+    # Remove immediately; intentional kicks must not reserve a seat or auto-rejoin.
+    await remove_client(client_id)
+    if socket:
         try:
-            await room["players"][client_id]["ws"].close()
+            await send_json(socket, {"type": "kicked", "message": "你已被管理員移出房間"})
+            await socket.close(code=4003, reason="Removed by administrator")
         except Exception:
             pass
+    logger.info("Admin removed client=%s", client_id)
 
 
 async def kick_room(room_id: str):
     room = rooms.get(room_id)
-    if not room:
-        return
-
-    for client_id, p in list(room["players"].items()):
-        try:
-            await p["ws"].close()
-        except Exception:
-            pass
+    if room:
+        for client_id in list(room["players"]):
+            await kick_client_by_id(client_id)
 
 
 async def kick_all():
-    for room_id, room in list(rooms.items()):
-        for client_id, p in list(room["players"].items()):
-            try:
-                await p["ws"].close()
-            except Exception:
-                pass
+    for room_id in list(rooms):
+        await kick_room(room_id)
 
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse(request, "index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html", {"request": request, "version": APP_VERSION})
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -217,7 +247,7 @@ async def admin_page(request: Request, key: str = ""):
 
 @app.get("/healthz")
 async def healthz():
-    return {"ok": True}
+    return {"ok": True, "version": APP_VERSION}
 
 
 @app.get("/admin-data")
@@ -266,9 +296,20 @@ async def websocket_endpoint(ws: WebSocket):
     if not client_id:
         client_id = str(uuid.uuid4())[:8]
 
+    previous = connections.get(client_id)
+    connections[client_id] = ws
+    if previous and previous is not ws:
+        try:
+            await previous.close(code=4001, reason="Connection replaced")
+        except Exception:
+            pass
+    logger.info("WebSocket connected client=%s", client_id)
+
     try:
         while True:
             raw = await ws.receive_text()
+            if connections.get(client_id) is not ws:
+                break
             data = json.loads(raw)
             action = data.get("action")
 
@@ -279,8 +320,6 @@ async def websocket_endpoint(ws: WebSocket):
                 break
 
             if action == "create_room":
-                await remove_client_from_current_room(client_id)
-
                 name = data.get("name", "").strip()
                 color = data.get("color", "#3b82f6").strip()
 
@@ -288,6 +327,7 @@ async def websocket_endpoint(ws: WebSocket):
                     await send_json(ws, {"type": "error", "message": "請輸入名稱"})
                     continue
 
+                await remove_client_from_current_room(client_id)
                 room_id = generate_room_id()
                 while room_id in rooms:
                     room_id = generate_room_id()
@@ -321,17 +361,22 @@ async def websocket_endpoint(ws: WebSocket):
 
                 room = rooms.get(room_id)
                 if not room:
-                    await send_json(ws, {"type": "error", "message": "找不到房間"})
+                    current = rooms.get(client_room.get(client_id))
+                    still_joined = current and current["players"].get(client_id, {}).get("ws") is ws
+                    await send_json(ws, {
+                        "type": "error" if still_joined else "session_expired",
+                        "message": "房間已結束或伺服器已重啟，請重新建立或加入房間"
+                    })
                     continue
 
-                # ✅ 如果這個人本來就在同一房，視為重連，不要先刪自己的格子
+                if len(room["players"]) >= MAX_PLAYERS and client_id not in room["players"]:
+                    await send_json(ws, {"type": "error", "message": "房間已滿（含斷線保留中的玩家）"})
+                    continue
+
                 current_room_id = client_room.get(client_id)
                 if current_room_id != room_id:
                     await remove_client_from_current_room(client_id)
-
-                if len(room["players"]) >= MAX_PLAYERS and client_id not in room["players"]:
-                    await send_json(ws, {"type": "error", "message": "房間已滿"})
-                    continue
+                cancel_disconnect_timer(client_id)
 
                 # ✅ 保留同一 client_id 的格子，只更新連線 / 名字 / 顏色
                 room["players"][client_id] = {
@@ -358,6 +403,7 @@ async def websocket_endpoint(ws: WebSocket):
                     "room_id": room_id,
                     "client_id": client_id
                 })
+                logger.info("Player joined client=%s room=%s rejoin=%s", client_id, room_id, current_room_id == room_id)
                 await broadcast_room(room_id)
 
             elif action == "change_color":
@@ -365,7 +411,7 @@ async def websocket_endpoint(ws: WebSocket):
 
                 room_id = client_room.get(client_id)
                 room = rooms.get(room_id)
-                if room is None or client_id not in room["players"]:
+                if room is None or room["players"].get(client_id, {}).get("ws") is not ws:
                     continue
 
                 if not color:
@@ -388,7 +434,7 @@ async def websocket_endpoint(ws: WebSocket):
 
                 room_id = client_room.get(client_id)
                 room = rooms.get(room_id)
-                if room is None or client_id not in room["players"]:
+                if room is None or room["players"].get(client_id, {}).get("ws") is not ws:
                     continue
 
                 if not isinstance(row, int) or not isinstance(col, int):
@@ -430,7 +476,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif action == "reset_me":
                 room_id = client_room.get(client_id)
                 room = rooms.get(room_id)
-                if room is None or client_id not in room["players"]:
+                if room is None or room["players"].get(client_id, {}).get("ws") is not ws:
                     continue
 
                 for r in range(ROWS):
@@ -444,7 +490,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif action == "reset_all":
                 room_id = client_room.get(client_id)
                 room = rooms.get(room_id)
-                if room is None or client_id not in room["players"]:
+                if room is None or room["players"].get(client_id, {}).get("ws") is not ws:
                     continue
 
                 if room["host_id"] != client_id:
@@ -457,11 +503,14 @@ async def websocket_endpoint(ws: WebSocket):
             elif action == "ping":
                 await send_json(ws, {"type": "pong"})
 
-    except WebSocketDisconnect:
-        await remove_client(client_id)
-    except Exception as e:
-        print("WebSocket error:", e)
-        await remove_client(client_id)
+    except WebSocketDisconnect as exc:
+        logger.info("WebSocket disconnected client=%s code=%s", client_id, exc.code)
+    except Exception:
+        logger.exception("WebSocket failed client=%s", client_id)
+    finally:
+        if connections.get(client_id) is ws:
+            connections.pop(client_id, None)
+        await mark_disconnected(client_id, ws)
 
 
 if __name__ == "__main__":

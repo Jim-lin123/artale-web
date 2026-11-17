@@ -8,6 +8,14 @@ let cols = 4;
 const PASSWORD = "123456"; // 要跟 server.py 的 SITE_PASSWORD 一樣
 let heartbeatTimer = null;
 let reconnectTimer = null;
+let pongTimer = null;
+let connectTimer = null;
+let reconnectAttempts = 0;
+let reconnectPaused = false;
+let hasJoined = false;
+let pendingRoomAction = null;
+const HEARTBEAT_INTERVAL_MS = 25000;
+const PONG_TIMEOUT_MS = 15000;
 
 const STORAGE_KEY = "artale_room_state_v1";
 const CLIENT_ID_KEY = "artale_client_id_v1";
@@ -38,53 +46,98 @@ function clearRoomState() {
     localStorage.removeItem(STORAGE_KEY);
 }
 
+function clearConnectionTimers() {
+    stopHeartbeat();
+    clearTimeout(connectTimer);
+    clearTimeout(reconnectTimer);
+    connectTimer = reconnectTimer = null;
+}
+
+function scheduleReconnect() {
+    if (reconnectPaused || reconnectTimer) return;
+    const delay = Math.min(1000 * 2 ** Math.min(reconnectAttempts++, 4), 15000);
+    setText("connText", `連線中斷，${delay / 1000} 秒後重連（進度保留 5 分鐘）`);
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connectWs();
+    }, delay);
+}
+
+function restartConnection(reason) {
+    console.info("[Artale] reconnect", { reason, at: new Date().toISOString() });
+    const previous = ws;
+    ws = null; // Ignore late events from the connection being replaced.
+    hasJoined = false;
+    clearConnectionTimers();
+    if (previous) previous.close();
+    scheduleReconnect();
+}
+
 function connectWs() {
+    if (reconnectPaused || (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))) return;
+    clearConnectionTimers();
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     const clientId = getOrCreateClientId();
-    const wsUrl =
-        `${protocol}://${location.host}/ws?p=${encodeURIComponent(PASSWORD)}&cid=${encodeURIComponent(clientId)}`;
+    const socket = new WebSocket(`${protocol}://${location.host}/ws?p=${encodeURIComponent(PASSWORD)}&cid=${encodeURIComponent(clientId)}`);
+    ws = socket;
+    setText("connText", "連線中...");
+    connectTimer = setTimeout(() => {
+        if (ws === socket) restartConnection("connect_timeout");
+    }, 20000);
 
-    ws = new WebSocket(wsUrl);
-
-    ws.onopen = function () {
-        setText("connText", "已連線");
+    socket.onopen = function () {
+        if (ws !== socket) return;
+        clearTimeout(connectTimer);
+        setText("connText", "已連線，正在確認房間...");
         startHeartbeat();
-        tryAutoRejoin();
-    };
-
-    ws.onclose = function () {
-        setText("connText", "連線中斷，3 秒後重連");
-        stopHeartbeat();
-
-        if (reconnectTimer) {
-            clearTimeout(reconnectTimer);
+        if (pendingRoomAction) {
+            const action = pendingRoomAction;
+            pendingRoomAction = null;
+            send(action);
+        } else if (!tryAutoRejoin()) {
+            setText("connText", "已連線，尚未加入房間");
         }
-
-        reconnectTimer = setTimeout(connectWs, 3000);
     };
 
-    ws.onmessage = function (event) {
+    socket.onclose = function (event) {
+        if (ws !== socket) return;
+        console.info("[Artale] disconnected", {
+            code: event.code, reason: event.reason, clean: event.wasClean,
+            visibility: document.visibilityState, at: new Date().toISOString()
+        });
+        ws = null;
+        hasJoined = false;
+        clearConnectionTimers();
+        if (event.code === 4001 || event.code === 4003) {
+            reconnectPaused = true;
+            if (event.code === 4003) leaveRoomMemory();
+            setText("connText", event.code === 4001
+                ? "已在其他分頁連線；可在此重新加入"
+                : "已被管理員移出房間");
+            return;
+        }
+        scheduleReconnect();
+    };
+
+    socket.onmessage = function (event) {
+        if (ws !== socket) return;
         const data = JSON.parse(event.data);
 
-        if (data.type === "joined") {
-            myClientId = data.client_id;
-            setText("currentRoom", data.room_id);
-
-            const roomInput = document.getElementById("roomId");
-            if (roomInput) {
-                roomInput.value = data.room_id;
-            }
-
-            const name = getName();
-            const color = getColor();
-
-            saveRoomState({
-                room_id: data.room_id,
-                name: name,
-                color: color
-            });
+        if (data.type === "pong") {
+            clearTimeout(pongTimer);
+            pongTimer = null;
+            reconnectAttempts = 0;
+            return;
         }
-
+        if (data.type === "joined") {
+            hasJoined = true;
+            reconnectAttempts = 0;
+            myClientId = data.client_id;
+            setText("connText", "已連線");
+            setText("currentRoom", data.room_id);
+            document.getElementById("roomId").value = data.room_id;
+            saveRoomState({ room_id: data.room_id, name: getName(), color: getColor() });
+        }
         if (data.type === "room_update") {
             players = data.players || [];
             grid = data.grid || [];
@@ -94,43 +147,69 @@ function connectWs() {
             renderPlayers();
             renderGrid();
         }
-
-        if (data.type === "pong") {
-            return;
+        if (data.type === "session_expired") {
+            leaveRoomMemory();
+            setText("connText", data.message);
         }
-
+        if (data.type === "kicked") {
+            reconnectPaused = true;
+            pendingRoomAction = null;
+            leaveRoomMemory();
+            setText("connText", data.message);
+        }
         if (data.type === "error") {
+            setText("connText", hasJoined ? "已連線" : "已連線，尚未加入房間");
             alert(data.message || "發生錯誤");
         }
     };
-
-    ws.onerror = function () {
-        setText("connText", "連線失敗");
+    socket.onerror = function () {
+        if (ws !== socket) return;
+        console.info("[Artale] socket error", { at: new Date().toISOString() });
+        // The following close event provides the diagnostic code and schedules retry.
+        setText("connText", "連線異常，正在重新連線...");
     };
+}
+
+function pingServer() {
+    if (!ws || ws.readyState !== WebSocket.OPEN || pongTimer) return;
+    const socket = ws;
+    pongTimer = setTimeout(() => {
+        if (ws === socket) restartConnection("heartbeat_timeout");
+    }, PONG_TIMEOUT_MS);
+    send({ action: "ping" });
 }
 
 function startHeartbeat() {
     stopHeartbeat();
-
-    heartbeatTimer = setInterval(() => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ action: "ping" }));
-        }
-    }, 2 * 60 * 1000); // 每 2 分鐘一次
+    pingServer();
+    heartbeatTimer = setInterval(pingServer, HEARTBEAT_INTERVAL_MS);
 }
 
 function stopHeartbeat() {
-    if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
+    clearInterval(heartbeatTimer);
+    clearTimeout(pongTimer);
+    heartbeatTimer = pongTimer = null;
+}
+
+function resumeConnection() {
+    if (reconnectPaused) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        if (ws && ws.readyState === WebSocket.CONNECTING) return;
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        connectWs();
+        return;
     }
+    // Timers may have been suspended while the page was in the background.
+    clearTimeout(pongTimer);
+    pongTimer = null;
+    pingServer();
 }
 
 function tryAutoRejoin() {
     const saved = loadRoomState();
-    if (!saved) return;
-    if (!saved.room_id || !saved.name || !saved.color) return;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!saved || !saved.room_id || !saved.name || !saved.color) return false;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
 
     const nameInput = document.getElementById("name");
     const roomInput = document.getElementById("roomId");
@@ -148,6 +227,7 @@ function tryAutoRejoin() {
         room_id: saved.room_id,
         color: saved.color
     }));
+    return true;
 }
 
 function setText(id, text) {
@@ -180,57 +260,50 @@ function updateMyColorPreview() {
 
 function send(obj) {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-        alert("WebSocket 尚未連線");
-        return;
+        setText("connText", "正在重新連線，連線成功後會自動返回房間");
+        resumeConnection();
+        return false;
     }
-    ws.send(JSON.stringify(obj));
+    try {
+        ws.send(JSON.stringify(obj));
+        return true;
+    } catch (error) {
+        restartConnection("send_failed");
+        return false;
+    }
+}
+
+function requestRoom(action) {
+    reconnectPaused = false;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        send(action);
+    } else {
+        pendingRoomAction = action;
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        connectWs();
+    }
 }
 
 function createRoom() {
     const name = getName();
-    const color = getColor();
-
     if (!name) {
         alert("請輸入名稱");
         return;
     }
-
     updateMyColorPreview();
-
-    // 建新房前清掉舊房資訊，但保留固定 client_id
-    clearRoomState();
-
-    send({
-        action: "create_room",
-        name: name,
-        color: color
-    });
+    requestRoom({ action: "create_room", name, color: getColor() });
 }
 
 function joinRoom() {
     const name = getName();
     const roomId = getRoomId();
-    const color = getColor();
-
     if (!name || !roomId) {
         alert("請輸入名稱與房號");
         return;
     }
-
     updateMyColorPreview();
-
-    send({
-        action: "join_room",
-        name: name,
-        room_id: roomId,
-        color: color
-    });
-
-    saveRoomState({
-        room_id: roomId,
-        name: name,
-        color: color
-    });
+    requestRoom({ action: "join_room", name, room_id: roomId, color: getColor() });
 }
 
 function changeColor() {
@@ -243,9 +316,7 @@ function changeColor() {
         saveRoomState(saved);
     }
 
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-        return;
-    }
+    if (!hasJoined) return;
 
     send({
         action: "change_color",
@@ -254,14 +325,17 @@ function changeColor() {
 }
 
 function resetMe() {
+    if (!hasJoined) { resumeConnection(); return; }
     send({ action: "reset_me" });
 }
 
 function resetAll() {
+    if (!hasJoined) { resumeConnection(); return; }
     send({ action: "reset_all" });
 }
 
 function clickCell(row, col) {
+    if (!hasJoined) { resumeConnection(); return; }
     send({
         action: "click_cell",
         row: row,
@@ -271,6 +345,12 @@ function clickCell(row, col) {
 
 function leaveRoomMemory() {
     clearRoomState();
+    hasJoined = false;
+    myClientId = "";
+    players = [];
+    grid = [];
+    renderPlayers();
+    renderGrid();
     setText("currentRoom", "-");
     const roomInput = document.getElementById("roomId");
     if (roomInput) {
@@ -291,7 +371,8 @@ function renderPlayers() {
         div.textContent =
             p.name +
             (p.client_id === myClientId ? "（你）" : "") +
-            (p.is_host ? "［房主］" : "");
+            (p.is_host ? "［房主］" : "") +
+            (p.connected === false ? "（斷線保留中）" : "");
         wrap.appendChild(div);
     });
 }
@@ -362,9 +443,10 @@ function renderGrid() {
     }
 }
 
-window.addEventListener("beforeunload", () => {
-    // 如果你不想關頁面就清除記錄，可以把這行註解掉
-    // clearRoomState();
+window.addEventListener("online", resumeConnection);
+window.addEventListener("pageshow", resumeConnection);
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") resumeConnection();
 });
 
 document.getElementById("color").addEventListener("input", changeColor);

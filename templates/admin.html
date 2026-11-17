@@ -148,7 +148,7 @@
                 roomHead.innerHTML = `
                     <div>
                         <b>房間：${room.room_id}</b>　
-                        <span>人數：${room.count}</span>
+                        <span>在線：${room.online_count} ／ 人數：${room.count}（含斷線保留）</span>
                     </div>
                     <div>
                         <button class="gray" onclick="kickRoom('${room.room_id}')">踢整房</button>
@@ -167,6 +167,7 @@
                             <span class="dot" style="background:${p.color};"></span>
                             <span>${p.name}</span>
                             ${p.is_host ? "<b>［房主］</b>" : ""}
+                            ${p.connected === false ? "<small>斷線保留中（最多 5 分鐘）</small>" : ""}
                             <small>${p.client_id}</small>
                         </div>
                         <div>
